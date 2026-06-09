@@ -1,160 +1,109 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 BOT_TOKEN = "8830801271:AAE8sPUPBg1SyavYNIDrCOOFG8kimr9K4Fs"
 
 WB_COMMISSION = {
-    "Одежда": 20,
-    "Обувь": 18,
-    "Аксессуары": 17,
-    "Бытовая техника": 12,
-    "Электроника": 12,
-    "Товары для дома": 15,
-    "Спорт": 14,
-    "Детские товары": 13,
-    "Продукты": 10,
+    "Одежда": 20, "Обувь": 18, "Аксессуары": 17,
+    "Бытовая техника": 12, "Электроника": 12, "Товары для дома": 15,
+    "Спорт": 14, "Детские товары": 13, "Продукты": 10,
 }
 
-TAX_RATE = 6
-LOGISTICS_COST = 50
+# Временное хранилище данных пользователя
+user_data = {}
 
-PURCHASE_PRICE, SELLING_PRICE, CATEGORY, LOGISTICS = range(4)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data[update.effective_user.id] = {"step": "price"}
+    await update.message.reply_text("🛒 Введи цену закупки (за 1 шт.):")
+    print(f"START: user {update.effective_user.id}")
 
-def calculate_profit(purchase_price, selling_price, category, logistics=LOGISTICS_COST):
-    commission_rate = WB_COMMISSION.get(category, 18)
-    commission_rub = selling_price * commission_rate / 100
-    tax_rub = selling_price * TAX_RATE / 100
-    net_profit = selling_price - purchase_price - commission_rub - tax_rub - logistics
-    margin_percent = (net_profit / selling_price * 100) if selling_price > 0 else 0
-    
-    return {
-        "purchase_price": purchase_price,
-        "selling_price": selling_price,
-        "commission_rate": commission_rate,
-        "commission_rub": round(commission_rub, 2),
-        "tax_rub": round(tax_rub, 2),
-        "logistics": logistics,
-        "net_profit": round(net_profit, 2),
-        "margin_percent": round(margin_percent, 1),
-    }
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.replace(",", ".")
+    print(f"MSG from {user_id}: {text}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "🛒 *Калькулятор юнит-экономики Wildberries*\n\n"
-        "Считаю чистую прибыль с одной единицы товара.\n"
-        "Введи *цену закупки* (сколько платишь поставщику за 1 шт.):",
-        parse_mode="Markdown"
-    )
-    return PURCHASE_PRICE
+    if user_id not in user_data:
+        await start(update, context)
+        return
 
-async def get_purchase_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    step = user_data[user_id].get("step", "price")
+
     try:
-        price = float(update.message.text.replace(",", "."))
-        if price <= 0:
-            raise ValueError
-        context.user_data["purchase_price"] = price
-        await update.message.reply_text("💰 Введи *цену продажи* на Wildberries:", parse_mode="Markdown")
-        return SELLING_PRICE
+        # Шаг 1: цена закупки
+        if step == "price":
+            price = float(text)
+            user_data[user_id]["purchase"] = price
+            user_data[user_id]["step"] = "sell"
+            await update.message.reply_text("💰 Введи цену продажи:")
+
+        # Шаг 2: цена продажи
+        elif step == "sell":
+            price = float(text)
+            user_data[user_id]["sell"] = price
+            user_data[user_id]["step"] = "category"
+            cats = list(WB_COMMISSION.keys())
+            keyboard = [[c] for c in cats]
+            await update.message.reply_text(
+                "📦 Выбери категорию:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+
+        # Шаг 3: категория
+        elif step == "category":
+            if text not in WB_COMMISSION:
+                cats = list(WB_COMMISSION.keys())
+                keyboard = [[c] for c in cats]
+                await update.message.reply_text(
+                    "❌ Выбери из списка:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                )
+                return
+            user_data[user_id]["category"] = text
+            user_data[user_id]["step"] = "logistic"
+            await update.message.reply_text("🚚 Введи стоимость логистики (или 0):")
+
+        # Шаг 4: логистика и результат
+        elif step == "logistic":
+            logistic = float(text)
+            if logistic == 0:
+                logistic = 50
+
+            p = user_data[user_id]["purchase"]
+            s = user_data[user_id]["sell"]
+            cat = user_data[user_id]["category"]
+            com = s * WB_COMMISSION[cat] / 100
+            tax = s * 6 / 100
+            profit = s - p - com - tax - logistic
+            margin = (profit / s * 100) if s > 0 else 0
+
+            emoji = "✅" if profit > 0 else "❌"
+            await update.message.reply_text(
+                f"📊 *Результат*\n\n"
+                f"Цена закупки: {p} ₽\n"
+                f"Цена продажи: {s} ₽\n"
+                f"Комиссия WB: -{round(com,2)} ₽\n"
+                f"Налог УСН: -{round(tax,2)} ₽\n"
+                f"Логистика: -{logistic} ₽\n\n"
+                f"{emoji} Прибыль: *{round(profit,2)} ₽*\n"
+                f"Маржинальность: *{round(margin,1)}%*",
+                parse_mode="Markdown"
+            )
+            await update.message.reply_text("🔄 /start — новый расчёт")
+            user_data.pop(user_id, None)
+
     except ValueError:
-        await update.message.reply_text("❌ Введи число (например: 500 или 499.90).")
-        return PURCHASE_PRICE
+        await update.message.reply_text("❌ Введи число. Попробуй ещё раз:")
 
-async def get_selling_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        price = float(update.message.text.replace(",", "."))
-        if price <= 0:
-            raise ValueError
-        context.user_data["selling_price"] = price
-        
-        categories = list(WB_COMMISSION.keys())
-        keyboard = [[cat] for cat in categories]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        
-        await update.message.reply_text(
-            "📦 Выбери *категорию товара*:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        return CATEGORY
-    except ValueError:
-        await update.message.reply_text("❌ Введи число.")
-        return SELLING_PRICE
-
-async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    category = update.message.text
-    
-    if category not in WB_COMMISSION:
-        categories = list(WB_COMMISSION.keys())
-        keyboard = [[cat] for cat in categories]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text("❌ Выбери категорию из списка:", reply_markup=reply_markup)
-        return CATEGORY
-    
-    context.user_data["category"] = category
-    
-    await update.message.reply_text(
-        "🚚 Введи *стоимость логистики* за единицу (или отправь 0, если не знаешь):",
-        parse_mode="Markdown"
-    )
-    return LOGISTICS
-
-async def get_logistics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        logistics = float(update.message.text.replace(",", "."))
-        if logistics < 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("❌ Введи число.")
-        return LOGISTICS
-    
-    if logistics == 0:
-        logistics = LOGISTICS_COST
-    
-    result = calculate_profit(
-        purchase_price=context.user_data["purchase_price"],
-        selling_price=context.user_data["selling_price"],
-        category=context.user_data["category"],
-        logistics=logistics,
-    )
-    
-    emoji = "✅" if result["net_profit"] > 0 else "❌"
-    message = (
-        f"📊 *Результат расчёта*\n\n"
-        f"  • Цена закупки: {result['purchase_price']} ₽\n"
-        f"  • Цена продажи: {result['selling_price']} ₽\n"
-        f"  • Комиссия WB ({result['commission_rate']}%): -{result['commission_rub']} ₽\n"
-        f"  • Налог УСН (6%): -{result['tax_rub']} ₽\n"
-        f"  • Логистика: -{result['logistics']} ₽\n\n"
-        f"{emoji} *Чистая прибыль: {result['net_profit']} ₽*\n"
-        f"📈 *Маржинальность: {result['margin_percent']}%*"
-    )
-    
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
-    await update.message.reply_text("🔄 Отправь /start для нового расчёта.")
-    
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("👋 Отменено. /start для нового расчёта.", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data.pop(update.effective_user.id, None)
+    await update.message.reply_text("👋 Отменено. /start для начала.")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            PURCHASE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_purchase_price)],
-            SELLING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_selling_price)],
-            CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_category)],
-            LOGISTICS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_logistics)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    
-    app.add_handler(conv_handler)
-    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ Бот запущен.")
     app.run_polling()
 
