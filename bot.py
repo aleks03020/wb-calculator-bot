@@ -2,7 +2,7 @@ import logging
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8830801271:AAE8sPUPBg1SyavYNIDrCOOFG8kimr9K4Fs"
+BOT_TOKEN = "8863928670:AAEYlf9rQNT2J-PWwhdSFPdag0ez5SvyLqI"
 
 WB_COMMISSION = {
     "Одежда": 20, "Обувь": 18, "Аксессуары": 17,
